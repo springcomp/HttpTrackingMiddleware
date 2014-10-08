@@ -1,0 +1,8 @@
+bin/
+obj/
+packages/
+
+# Ignore files built by Visual Studio
+
+*.suo
+*.user
