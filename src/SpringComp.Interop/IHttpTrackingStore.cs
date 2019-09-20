@@ -1,6 +1,6 @@
 ﻿using System.Threading.Tasks;
 
-namespace SpringComp.Owin.Interop
+namespace SpringComp.Interop
 {
     /// <summary>
     /// Interface for tracking details about HTTP calls.

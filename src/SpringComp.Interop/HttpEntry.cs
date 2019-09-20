@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 
-namespace SpringComp.Owin.Interop
+namespace SpringComp.Interop
 {
     /// <summary>
     /// A simple class to hold details of an HTTP call.
@@ -40,12 +40,12 @@ namespace SpringComp.Owin.Interop
         /// <summary>
         /// Http request URI.
         /// </summary>
-        public Uri RequestUri { get; set; }
+        public string RequestUri { get; set; }
 
         /// <summary>
         /// Http request headers.
         /// </summary>
-        public IDictionary<String, String[]> RequestHeaders { get; set; }
+        public IDictionary<string, string[]> RequestHeaders { get; set; }
 
         /// <summary>
         /// Http request content-length
@@ -65,14 +65,9 @@ namespace SpringComp.Owin.Interop
         public int StatusCode { get; set; }
 
         /// <summary>
-        /// Http response status line.
-        /// </summary>
-        public string ReasonPhrase { get; set; }
-
-        /// <summary>
         /// Http response headers.
         /// </summary>
-        public IDictionary<String, String[]> ResponseHeaders { get; set; }
+        public IDictionary<string, string[]> ResponseHeaders { get; set; }
 
         /// <summary>
         /// Http response content-length

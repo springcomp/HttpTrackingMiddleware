@@ -1,22 +1,22 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
-
-using Microsoft.Owin;
-
-using SpringComp.Owin.Interop;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
+using SpringComp.Interop;
 
 namespace SpringComp.Owin
 {
-    using AppFunc = Func<IDictionary<string, object>, Task>;
-
     /// <summary>
     /// A simple Owin Middleware to capture HTTP requests and responses
     /// and store details of the call into a durable store.
     /// </summary>
-    public sealed class HttpTrackingMiddleware : OwinMiddleware
+    public sealed class HttpTrackingMiddleware
     {
+        private readonly RequestDelegate next_;
+
         /// <summary>
         /// Default value for the TrackingId response header.
         /// This value can be changed by specifying the TrackingIdPropertyName
@@ -33,9 +33,9 @@ namespace SpringComp.Owin
         /// </summary>
         /// <param name="next">A reference to the next OwinMiddleware object in the chain.</param>
         /// <param name="options">A reference to an <see cref="HttpTrackingOptions"/> class.</param>
-        public HttpTrackingMiddleware(OwinMiddleware next, HttpTrackingOptions options)
-            : base(next)
+        public HttpTrackingMiddleware(RequestDelegate next, HttpTrackingOptions options)
         {
+            next_ = next;
             storage_ = options.TrackingStore;
 
             if (!string.IsNullOrEmpty(options.TrackingIdPropertyName))
@@ -50,9 +50,9 @@ namespace SpringComp.Owin
         /// the request, the response, the identity of the caller and the
         /// call duration to persistent storage.
         /// </summary>
-        /// <param name="context">A reference to the Owin context.</param>
+        /// <param name="context">A reference to the HTTP context.</param>
         /// <returns />
-        public override async Task Invoke(IOwinContext context)
+        public async Task Invoke(HttpContext context)
         {
             var request = context.Request;
             var response = context.Response;
@@ -60,8 +60,8 @@ namespace SpringComp.Owin
             // capture details about the caller identity
 
             var identity =
-                request.User != null && request.User.Identity.IsAuthenticated ?
-                    request.User.Identity.Name :
+                context.User != null && context.User.Identity.IsAuthenticated ?
+                    context.User.Identity.Name :
                     "(anonymous)"
                     ;
 
@@ -73,38 +73,33 @@ namespace SpringComp.Owin
             // replace the request stream in order to intercept downstream reads
 
             var requestBuffer = new MemoryStream();
-            var requestStream = new ContentStream(requestBuffer, request.Body);
+            var requestStream = new ContentStream(requestBuffer, request.Body)
+            {
+                MaxRecordedLength = maxRequestLength_,
+            };
             request.Body = requestStream;
 
             // replace the response stream in order to intercept downstream writes
 
             var responseBuffer = new MemoryStream();
-            var responseStream = new ContentStream(responseBuffer, response.Body);
+            var responseStream = new ContentStream(responseBuffer, response.Body)
+            {
+                MaxRecordedLength = maxResponseLength_,
+            };
             response.Body = responseStream;
 
             // add the "Http-Tracking-Id" response header
 
-            context.Response.OnSendingHeaders(state =>
-            {
-                var ctx = state as IOwinContext;
-                var resp = ctx.Response;
-
-                // adding the tracking id response header so that the user
-                // of the API can correlate the call back to this entry
-
-                resp.Headers.Add(trackingIdPropertyName_, new[] { record.TrackingId.ToString("d"), });
-
-            }, context)
-            ;
+            context.Response.OnStarting(OnSendingHeaders, (response, record));
 
             // invoke the next middleware in the pipeline
 
-            await Next.Invoke(context);
+            await next_.Invoke(context);
 
             // rewind the request and response buffers
             // and record their content
 
-            WriteRequestHeaders(request, record);
+            WriteRequestHeaders(context, record);
             record.RequestLength = requestStream.ContentLength;
             record.Request = await WriteContentAsync(requestStream, record.RequestHeaders, maxRequestLength_);
 
@@ -117,31 +112,63 @@ namespace SpringComp.Owin
             await storage_.InsertRecordAsync(record);
         }
 
-        private static void WriteRequestHeaders(IOwinRequest request, HttpEntry record)
+        private Task OnSendingHeaders(object state)
         {
-            record.Verb = request.Method;
-            record.RequestUri = request.Uri;
-            record.RequestHeaders = request.Headers;
+            if (state is ValueTuple<HttpResponse, HttpEntry> tuple)
+            {
+                var (response, record) = tuple;
+                return OnSendingHeaders(response, record);
+            }
+
+            return Task.CompletedTask;
+        }
+        private async Task OnSendingHeaders(HttpResponse response, HttpEntry record)
+        {
+            // adding the tracking id response header so that the user
+            // of the API can correlate the call back to this entry
+
+            response.Headers.Add(trackingIdPropertyName_, new[] { record.TrackingId.ToString("d"), });
+
+            await Task.CompletedTask;
         }
 
-        private static void WriteResponseHeaders(IOwinResponse response, HttpEntry record)
+        private static void WriteRequestHeaders(HttpContext context, HttpEntry record)
+        {
+            var request = context.Request;
+
+            record.Verb = request.Method;
+            record.RequestUri = GetPath(context);
+            record.RequestHeaders = request.Headers.ToDictionary(
+                kvp => kvp.Key,
+                kvp => kvp.Value.ToArray()
+            );
+        }
+
+        private static void WriteResponseHeaders(HttpResponse response, HttpEntry record)
         {
             record.StatusCode = response.StatusCode;
-            record.ReasonPhrase = response.ReasonPhrase;
-            record.ResponseHeaders = response.Headers;
+            record.ResponseHeaders = response.Headers.ToDictionary(
+                kvp => kvp.Key,
+                kvp => kvp.Value.ToArray()
+            );
         }
 
         private static async Task<string> WriteContentAsync(ContentStream stream, IDictionary<string, string[]> headers, long maxLength)
         {
-            const string ContentType = "Content-Type";
+            const string ContentTypeHeaderName = "Content-Type";
 
-            var contentType = 
-                headers.ContainsKey(ContentType) ?
-                headers[ContentType][0] :
+            var contentType =
+                headers.ContainsKey(ContentTypeHeaderName) ?
+                headers[ContentTypeHeaderName][0] :
                 null
                 ;
 
             return await stream.ReadContentAsync(contentType, maxLength);
+        }
+
+        private static string GetPath(HttpContext httpContext)
+        {
+            return httpContext.Features.Get<IHttpRequestFeature>()?.RawTarget ?? httpContext.Request.Path.ToString();
         }
     }
 }

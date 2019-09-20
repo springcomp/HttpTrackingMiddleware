@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace SpringComp.Owin
@@ -21,8 +22,8 @@ namespace SpringComp.Owin
         /// <summary>
         /// Initialize a new instance of the <see cref="ContentStream"/> class.
         /// </summary>
-        /// <param name="buffer"></param>
-        /// <param name="stream"></param>
+        /// <param name="buffer">To hold tracked data.</param>
+        /// <param name="stream">The HTTP stream.</param>
         public ContentStream(Stream buffer, Stream stream)
         {
             buffer_ = buffer;
@@ -30,12 +31,16 @@ namespace SpringComp.Owin
         }
 
         /// <summary>
+        /// Gets or sets the maximum recorded length.
+        /// Once the number of bytes read or written
+        /// is reach, the buffer no longer receives data.
+        /// </summary>
+        public long MaxRecordedLength { get; set; }
+
+        /// <summary>
         /// Returns the recorded length of the underlying stream.
         /// </summary>
-        public virtual long ContentLength
-        {
-            get { return contentLength_; }
-        }
+        public virtual long ContentLength => contentLength_;
 
         /// <summary>
         /// Reads the content of the stream as a string.
@@ -56,7 +61,7 @@ namespace SpringComp.Owin
             if (!IsTextContentType(contentType))
             {
                 contentType = String.IsNullOrEmpty(contentType) ? "N/A" : contentType;
-                return String.Format("{0} [{1} bytes]", contentType, ContentLength);
+                return $"{contentType} [{ContentLength} bytes]";
             }
 
             buffer_.Seek(0, SeekOrigin.Begin);
@@ -72,9 +77,9 @@ namespace SpringComp.Owin
                 ;
         }
 
-        protected void WriteContent(byte[] buffer, int offset, int count)
+        protected Task WriteContentAsync(byte[] buffer, int offset, int count)
         {
-            buffer_.Write(buffer, offset, count);
+            return buffer_.WriteAsync(buffer, offset, count);
         }
 
         #region Implementation
@@ -104,7 +109,7 @@ namespace SpringComp.Owin
             {
                 return Encoding.GetEncoding(charset);
             }
-            catch (ArgumentException e)
+            catch
             {
                 return Encoding.UTF8;
             }
@@ -114,50 +119,46 @@ namespace SpringComp.Owin
 
         #region System.IO.Stream Overrides
 
-        public override bool CanRead
-        {
-            get { return stream_.CanRead; }
-        }
+        public override bool CanRead => stream_.CanRead;
+        public override bool CanSeek => stream_.CanSeek;
+        public override bool CanWrite => stream_.CanWrite;
 
-        public override bool CanSeek
+        public override Task FlushAsync(CancellationToken cancellationToken)
         {
-            get { return stream_.CanSeek; }
-        }
-
-        public override bool CanWrite
-        {
-            get { return stream_.CanWrite; }
+            return stream_.FlushAsync(cancellationToken);
         }
 
         public override void Flush()
         {
-            stream_.Flush();
+            throw new NotSupportedException();
         }
 
-        public override long Length
-        {
-            get { return stream_.Length; }
-        }
+        public override long Length => stream_.Length;
 
         public override long Position
         {
-            get { return stream_.Position; }
-            set { stream_.Position = value; }
+            get => stream_.Position;
+            set => stream_.Position = value;
         }
 
-        public override int Read(byte[] buffer, int offset, int count)
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
             // read content from the request stream
 
-            count = stream_.Read(buffer, offset, count);
+            count = await stream_.ReadAsync(buffer, offset, count, cancellationToken);
             contentLength_ += count;
 
             // record the read content into our temporary buffer
 
-            if (count != 0)
-                WriteContent(buffer, offset, count);
+            if (count != 0 && contentLength_ < MaxRecordedLength)
+                await WriteContentAsync(buffer, offset, count);
 
             return count;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            throw new NotSupportedException();
         }
 
         public override long Seek(long offset, SeekOrigin origin)
@@ -170,17 +171,22 @@ namespace SpringComp.Owin
             stream_.SetLength(value);
         }
 
-        public override void Write(byte[] buffer, int offset, int count)
+        public override async Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
             // store the bytes into our local stream
 
-            WriteContent(buffer, 0, count);
+            await WriteContentAsync(buffer, 0, count);
 
             // write the bytes to the response stream
             // and record the actual number of bytes written
 
-            stream_.Write(buffer, offset, count);
+            await stream_.WriteAsync(buffer, offset, count, cancellationToken);
             contentLength_ += count;
+        }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            throw new NotSupportedException();
         }
 
         #endregion
