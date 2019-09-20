@@ -35,5 +35,15 @@ namespace HttpTracking.Controllers
             })
             .ToArray();
         }
+
+        [HttpPost]
+        public async Task Post()
+        {
+            var buffer = new byte[1024];
+            var count = 0;
+
+            while ((count = await Request.Body.ReadAsync(buffer, 0, buffer.Length)) != 0)
+                ;
+        }
     }
 }
